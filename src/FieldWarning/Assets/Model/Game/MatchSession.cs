@@ -71,6 +71,9 @@ namespace PFW.Model.Game
         public List<Team> Teams { get; } = new List<Team>();
         public ICollection<PlatoonBehaviour> Platoons { get; } = new List<PlatoonBehaviour>();
 
+        private readonly List<SpawnPointBehaviour> _spawnPoints = new List<SpawnPointBehaviour>();
+        public IReadOnlyList<SpawnPointBehaviour> SpawnPoints => _spawnPoints;
+
         public TerrainMap TerrainMap { get; private set; }
         public PathfinderData PathData { get; private set; }
 
@@ -115,7 +118,7 @@ namespace PFW.Model.Game
 
             if (!_visibilityManager)
                 _inputManager = gameObject.AddComponent<InputManager>();
-            _inputManager.Session = _inputManager.Session ?? this;
+            //_inputManager.Session = _inputManager.Session ?? this;
 
             _visibilityManager = FindObjectOfType<VisibilityManager>();
             if (!_visibilityManager)
@@ -170,9 +173,12 @@ namespace PFW.Model.Game
                 _unitRegistry.RegisterUnitDeath(unit);
 
         // TODO If we can refactor MatchSession to create the spawn points, we will be able to get rid of this:
-        public void RegisterSpawnPoint(SpawnPointBehaviour spawn)
+        public void RegisterSpawnPoint(SpawnPointBehaviour spawnPoint)
         {
-            _inputManager.RegisterSpawnPoint(spawn);
+            if (!_spawnPoints.Contains(spawnPoint))
+            {
+                _spawnPoints.Add(spawnPoint);
+            }
         }
 
         public void UpdateTeamBelonging(Team newTeam)

@@ -19,6 +19,7 @@ using System;
 
 using PFW.Model.Game;
 using PFW.Model.Armory;
+using PFW.UI.Ingame.InputManagement;
 using PFW.Units;
 using PFW.Units.Component.Movement;
 
@@ -32,12 +33,6 @@ namespace PFW.UI.Ingame
      */
     public class InputManager : MonoBehaviour
     {
-        private Texture2D _firePosReticle;
-        private Texture2D _primedReticle;
-
-        private List<SpawnPointBehaviour> _spawnPointList = new List<SpawnPointBehaviour>();
-        private ClickManager _rightClickManager;
-
         public enum MouseMode {
             NORMAL,       //< Left click selects, right click orders normal movement or attack.
             PURCHASING,   //< Left click purchases platoon, right click cancels.
@@ -45,378 +40,72 @@ namespace PFW.UI.Ingame
             REVERSE_MOVE, //< Left click reverse moves to cursor, right click cancels.
             FAST_MOVE,    //< Left click fast moves to cursor, right click cancels.
             SPLIT         //< Left click splits the platoon, right click cancels.
-        };
+        }
 
-        public MouseMode CurMouseMode { get; private set; } = MouseMode.NORMAL;
+        private IInputMode InputMode
+        {
+            get => _inputMode;
+            set
+            {
+                var oldInputMode = _inputMode;
+                if (_inputMode == value)
+                {
+                    return;
+                }
 
-        private BuyTransaction _currentBuyTransaction;
-
-        private MatchSession _session;
-        public MatchSession Session {
-            get {
-                return _session;
-            }
-
-            set {
-                if (_session == null)
-                    _session = value;
+                oldInputMode?.Exit();
+                _inputMode = value;
+                _inputMode.Enter();
             }
         }
 
-        private SelectionManager _selectionManager;
-
-        private PlayerData _localPlayer {
-            get {
-                return Session.LocalPlayer.Data;
-            }
-        }
+        private IInputMode _inputMode;
+        private InputModeContext _inputModeContext;
 
         private void Awake()
         {
-            _selectionManager = new SelectionManager();
-            _selectionManager.Awake();
-        }
-
-        private void Start()
-        {
-            _firePosReticle = (Texture2D)Resources.Load("FirePosTestTexture");
-            if (_firePosReticle == null)
-                throw new Exception("No fire pos reticle specified!");
-
-            _primedReticle = (Texture2D)Resources.Load("PrimedCursor");
-            if (_primedReticle == null)
-                throw new Exception("No primed reticle specified!");
-
-            _rightClickManager = new ClickManager(1, MoveGhostsToMouse, OnOrderShortClick, OnOrderLongClick, OnOrderHold);
+            _inputModeContext = new InputModeContext();
+            InputMode = new NormalMode(_inputModeContext);
         }
 
         private void Update()
         {
-            _selectionManager.UpdateMouseMode(CurMouseMode);
-
-            switch (CurMouseMode) {
-
-            case MouseMode.PURCHASING:
-
-                RaycastHit hit;
-                if (Util.GetTerrainClickLocation(out hit)) {
-                    ShowGhostUnitsAndMaybePurchase(hit);
-                }
-
-                MaybeExitPurchasingModeAndRefund();
-                break;
-
-            case MouseMode.NORMAL:
-                ApplyHotkeys();
-                _rightClickManager.Update();
-                break;
-
-            case MouseMode.FIRE_POS:
-                ApplyHotkeys();
-
-                if (Input.GetMouseButtonDown(0))
-                    _selectionManager.DispatchFirePosCommand();
-
-                if ((Input.GetMouseButtonDown(0) && !Input.GetKey(KeyCode.LeftShift))
-                    || Input.GetMouseButtonDown(1))
-                    EnterNormalMode();
-
-                break;
-
-            case MouseMode.REVERSE_MOVE:
-                ApplyHotkeys();
-                if (Input.GetMouseButtonDown(0)) {
-                    MoveGhostsToMouse();
-                    _selectionManager.DispatchMoveCommand(
-                            false, MoveCommandType.REVERSE);
-                }
-
-                if ((Input.GetMouseButtonDown(0) && !Input.GetKey(KeyCode.LeftShift))
-                    || Input.GetMouseButtonDown(1))
-                    EnterNormalMode();
-                break;
-
-            case MouseMode.FAST_MOVE:
-                ApplyHotkeys();
-                if (Input.GetMouseButtonDown(0)) {
-                    MoveGhostsToMouse();
-                    _selectionManager.DispatchMoveCommand(
-                            false, MoveCommandType.FAST);
-                }
-
-                if ((Input.GetMouseButtonDown(0) && !Input.GetKey(KeyCode.LeftShift))
-                    || Input.GetMouseButtonDown(1))
-                    EnterNormalMode();
-                break;
-
-            case MouseMode.SPLIT:
-                ApplyHotkeys();
-                if (Input.GetMouseButtonDown(0)) {
-                    _selectionManager.DispatchSplitCommand(_localPlayer);
-                }
-
-                if ((Input.GetMouseButtonDown(0) && !Input.GetKey(KeyCode.LeftShift))
-                    || Input.GetMouseButtonDown(1))
-                    EnterNormalMode();
-                break;
-            default:
-                throw new Exception("impossible state");
-            }
+            InputMode = InputMode.HandleUpdate();
         }
 
         private void OnGUI()
         {
-            _selectionManager.OnGUI();
-        }
-
-        private void ShowGhostUnitsAndMaybePurchase(RaycastHit terrainHover)
-        {
-            // Show ghost units under mouse:
-            SpawnPointBehaviour closestSpawn = GetClosestSpawn(terrainHover.point);
-            _currentBuyTransaction.PreviewPurchase(
-                terrainHover.point,
-                2 * terrainHover.point - closestSpawn.transform.position);
-
-            MaybePurchaseGhostUnits(closestSpawn);
-        }
-
-        /**
-         * Purchase units if there is a buy selection.
-         */
-        private void MaybePurchaseGhostUnits(SpawnPointBehaviour closestSpawn)
-        {
-            if (Input.GetMouseButtonUp(0)) {
-                bool noUIcontrolsInUse = EventSystem.current.currentSelectedGameObject == null;
-
-                if (!noUIcontrolsInUse)
-                    return;
-
-                if (_currentBuyTransaction == null)
-                    return;
-
-                closestSpawn.BuyPlatoons(_currentBuyTransaction.PreviewPlatoons);
-
-                if (Input.GetKey(KeyCode.LeftShift)) {
-                    // We turned the current ghosts into real units, so:
-                    _currentBuyTransaction = _currentBuyTransaction.Clone();
-                } else {
-                    ExitPurchasingMode();
-                }
-            }
-        }
-
-        private void MaybeExitPurchasingModeAndRefund()
-        {
-            if (Input.GetMouseButton(1)) {
-                foreach (var g in _currentBuyTransaction.PreviewPlatoons) {
-                    g.Destroy();
-                }
-
-                int unitPrice = _currentBuyTransaction.Unit.Price;
-                Session.LocalPlayer.Refund(unitPrice * _currentBuyTransaction.UnitCount);
-
-                ExitPurchasingMode();
-            }
-        }
-
-        /**
-         * The ghost units are used to briefly hold the destination
-         * for a move order, so they need to be moved to the cursor
-         * if a move order click is issued.
-         */
-        void MoveGhostsToMouse()
-        {
-            RaycastHit hit;
-            if (Util.GetTerrainClickLocation(out hit))
-                _selectionManager.PrepareMoveOrderPreview(hit.point);
-        }
-
-        void OnOrderHold()
-        {
-            RaycastHit hit;
-            if (Util.GetTerrainClickLocation(out hit))
-                _selectionManager.RotateMoveOrderPreview(hit.point);
-        }
-
-        void OnOrderShortClick()
-        {
-            if (!_selectionManager.Empty) {
-                DisplayOrderFeedback();
-            }
-
-            _selectionManager.DispatchMoveCommand(false, MoveCommandType.NORMAL);
-        }
-
-        void OnOrderLongClick()
-        {
-            _selectionManager.DispatchMoveCommand(true, MoveCommandType.NORMAL);
-        }
-
-        // Show a Symbol at the position where a move order was issued:
-        private void DisplayOrderFeedback()
-        {
-            RaycastHit hit;
-            if (Util.GetTerrainClickLocation(out hit))
-                GameObject.Instantiate(
-                        Resources.Load(
-                                "MoveMarker",
-                                typeof(GameObject)),
-                        hit.point + new Vector3(0, 0.01f, 0),
-                        Quaternion.Euler(new Vector3(90, 0, 0))
-                );
-        }
-
-        /**
-         * Called when a unit card from the buy menu is pressed.
-         */
-        public void BuyCallback(Unit unit)
-        {
-            bool paid = Session.LocalPlayer.TryPay(unit.Price);
-            if (!paid)
-                return;
-
-            if (_currentBuyTransaction == null)
-                _currentBuyTransaction = new BuyTransaction(unit, _localPlayer);
-            else
-                _currentBuyTransaction.AddUnit();
-
-            //buildUnit(UnitType.Tank);
-            CurMouseMode = MouseMode.PURCHASING;
-        }
-
-        private void ExitPurchasingMode()
-        {
-            _currentBuyTransaction.PreviewPlatoons.Clear();
-
-            _currentBuyTransaction = null;
-
-            CurMouseMode = MouseMode.NORMAL;
-        }
-
-        private SpawnPointBehaviour GetClosestSpawn(Vector3 p)
-        {
-            var pointList = _spawnPointList.Where(
-                x => x.Team == _localPlayer.Team).ToList();
-
-            SpawnPointBehaviour go = pointList.First();
-            float distance = Single.PositiveInfinity;
-
-            foreach (var s in pointList) {
-                if (Vector3.Distance(p, s.transform.position) < distance) {
-                    distance = Vector3.Distance(p, s.transform.position);
-                    go = s;
-                }
-            }
-            return go;
-        }
-
-        public void RegisterSpawnPoint(SpawnPointBehaviour s)
-        {
-            if (!_spawnPointList.Contains(s))
-                _spawnPointList.Add(s);
-        }
-
-        public void ApplyHotkeys()
-        {
-            if (!_session.isChatFocused) {
-            if (Commands.Unload) {
-                _selectionManager.DispatchUnloadCommand();
-
-            } else if (Commands.Load) {
-                _selectionManager.DispatchLoadCommand();
-
-            } else if (Commands.FirePos && !_selectionManager.Empty) {
-                EnterFirePosMode();
-
-            } else if (Commands.ReverseMove && !_selectionManager.Empty) {
-                EnterReverseMoveMode();
-
-            } else if (Commands.FastMove && !_selectionManager.Empty) {
-                EnterFastMoveMode();
-            } else if (Commands.Split && !_selectionManager.Empty) {
-                EnterSplitMode();
-            }
-        }
-        }
-
-        private void EnterFirePosMode()
-        {
-            CurMouseMode = MouseMode.FIRE_POS;
-            Vector2 hotspot = new Vector2(_firePosReticle.width / 2, _firePosReticle.height / 2);
-            Cursor.SetCursor(_firePosReticle, hotspot, CursorMode.Auto);
-        }
-
-        private void EnterNormalMode()
-        {
-            CurMouseMode = MouseMode.NORMAL;
-            Cursor.SetCursor(null, Vector2.zero, CursorMode.Auto);
-        }
-
-        private void EnterFastMoveMode()
-        {
-            CurMouseMode = MouseMode.FAST_MOVE;
-            Cursor.SetCursor(_primedReticle, Vector2.zero, CursorMode.Auto);
-        }
-
-        private void EnterReverseMoveMode()
-        {
-            CurMouseMode = MouseMode.REVERSE_MOVE;
-            Cursor.SetCursor(_primedReticle, Vector2.zero, CursorMode.Auto);
-        }
-
-        private void EnterSplitMode()
-        {
-            CurMouseMode = MouseMode.SPLIT;
-            Cursor.SetCursor(_primedReticle, Vector2.zero, CursorMode.Auto);
+            InputMode.OnGUI();
         }
 
         public void RegisterPlatoonBirth(PlatoonBehaviour platoon)
         {
-            _selectionManager.RegisterPlatoonBirth(platoon);
+            _inputModeContext.RegisterPlatoonBirth(platoon);
         }
 
         public void RegisterPlatoonDeath(PlatoonBehaviour platoon)
         {
-            _selectionManager.RegisterPlatoonDeath(platoon);
+            _inputModeContext.RegisterPlatoonDeath(platoon);
+        }
+
+        public void BuyCallback(Unit unit)
+        {
+            InputMode = InputMode.BuyCallback(unit);
         }
     }
 
-    public class Commands
+    public static class Commands
     {
-        public static bool Unload {
-            get {
-                return Input.GetKeyDown(Hotkeys.Unload);
-            }
-        }
+        public static bool Unload => Input.GetKeyDown(Hotkeys.Unload);
 
-        public static bool Load {
-            get {
-                return Input.GetKeyDown(Hotkeys.Load);
-            }
-        }
+        public static bool Load => Input.GetKeyDown(Hotkeys.Load);
 
-        public static bool FirePos {
-            get {
-                return Input.GetKeyDown(Hotkeys.FirePos);
-            }
-        }
+        public static bool FirePos => Input.GetKeyDown(Hotkeys.FirePos);
 
-        public static bool ReverseMove {
-            get {
-                return Input.GetKeyDown(Hotkeys.ReverseMove);
-            }
-        }
+        public static bool ReverseMove => Input.GetKeyDown(Hotkeys.ReverseMove);
 
-        public static bool FastMove {
-            get {
-                return Input.GetKeyDown(Hotkeys.FastMove);
-            }
-        }
+        public static bool FastMove => Input.GetKeyDown(Hotkeys.FastMove);
 
-        public static bool Split {
-            get {
-                return Input.GetKeyDown(Hotkeys.Split);
-            }
-        }
+        public static bool Split => Input.GetKeyDown(Hotkeys.Split);
     }
 }
